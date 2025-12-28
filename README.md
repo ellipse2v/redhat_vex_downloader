@@ -75,7 +75,7 @@ python3 redhat_vex_downloader.py --days 5 --regex "rhel|redhat"
 
 ## Configuration
 
-The tool uses a configuration file (`config.ini`) for persistent settings. See [CONFIGURATION.md](CONFIGURATION.md) for detailed configuration options.
+The tool uses a configuration file (`config.ini`) for persistent settings. 
 
 ### Proxy Configuration
 
