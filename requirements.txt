@@ -1,0 +1,18 @@
+# Red Hat VEX Downloader Requirements
+# Core dependencies for the VEX downloader and related tools
+
+# Data processing and analysis
+openpyxl==3.1.5
+pandas==2.3.0
+
+# Network and file operations
+requests==2.32.4
+zstandard==0.25.0
+
+# Testing
+pytest==8.4.1
+pytest-cov==6.2.1
+
+# Development tools
+flake8==7.3.0
+black==24.8.0

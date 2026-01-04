@@ -298,6 +298,307 @@ def filter_vex_files_by_regex(out_dir: Path, regex_pattern: str, max_workers: in
     print(f"  Removed: {len(removed_files)} files")
 
 
+def get_remote_file_list(base_url: str, changes_csv_path: Path) -> Set[str]:
+    """Get complete list of VEX files from remote repository via changes.csv"""
+    # Parse changes.csv to get all files
+    all_files = set()
+    
+    try:
+        with open(changes_csv_path, 'r') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) >= 2:
+                    try:
+                        vex_filename = row[0].strip('"').split('/')[-1]
+                        all_files.add(vex_filename)
+                    except (ValueError, IndexError):
+                        continue
+    except FileNotFoundError:
+        print(f"changes.csv not found at {changes_csv_path}")
+        return set()
+    
+    return all_files
+
+def get_deleted_files(base_url: str, deletions_csv_path: Path) -> Set[str]:
+    """Get list of deleted files from deletions.csv"""
+    deleted_files = set()
+    
+    try:
+        if deletions_csv_path.exists():
+            with open(deletions_csv_path, 'r') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2:
+                        try:
+                            vex_filename = row[0].strip('"').split('/')[-1]
+                            deleted_files.add(vex_filename)
+                        except (ValueError, IndexError):
+                            continue
+    except Exception as e:
+        print(f"⚠️  Error reading deletions.csv: {e}")
+    
+    return deleted_files
+
+def load_sync_index(data_dir: Path) -> dict:
+    """Load synchronization index from file in data directory."""
+    index_file = data_dir / "sync_index.json"
+    if index_file.exists():
+        try:
+            with open(index_file, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+def save_sync_index(index: dict, data_dir: Path) -> None:
+    """Save synchronization index to file in data directory."""
+    index_file = data_dir / "sync_index.json"
+    index_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(index_file, 'w') as f:
+        json.dump(index, f, indent=2)
+
+def get_file_modification_time(file_path: Path) -> float:
+    """Get file modification time as timestamp."""
+    try:
+        return file_path.stat().st_mtime
+    except (OSError, FileNotFoundError):
+        return 0.0
+
+def check_local_archive_completeness(data_dir: Path, remote_files: Set[str], sync_index: dict) -> Tuple[Set[str], Set[str], Set[str]]:
+    """Check which files are missing or outdated in local archive."""
+    missing_files = set()
+    outdated_files = set()
+    local_files = set()
+    
+    # Build set of files in local archive with their modification times
+    local_file_info = {}
+    for year_dir in data_dir.iterdir():
+        if year_dir.is_dir():
+            for file_path in year_dir.glob("*.json"):
+                filename = file_path.name
+                local_files.add(filename)
+                local_file_info[filename] = {
+                    'path': str(file_path),
+                    'mtime': get_file_modification_time(file_path),
+                    'size': file_path.stat().st_size
+                }
+    
+    # Check each remote file
+    for remote_file in remote_files:
+        if remote_file not in local_files:
+            # File is missing
+            missing_files.add(remote_file)
+        else:
+            # File exists, check if it's outdated
+            local_info = local_file_info[remote_file]
+            
+            # Check if file is in sync index and has changed
+            if remote_file in sync_index:
+                index_mtime = sync_index[remote_file].get('mtime', 0)
+                index_size = sync_index[remote_file].get('size', 0)
+                
+                # Consider file outdated if local version differs from index
+                if (abs(local_info['mtime'] - index_mtime) > 1 or 
+                    abs(local_info['size'] - index_size) > 10):
+                    outdated_files.add(remote_file)
+    
+    return missing_files, outdated_files, local_files
+
+def synchronize_archive(data_dir: Path, out_dir: Path, config: dict) -> None:
+    """Synchronize local archive with remote repository to ensure complete mirror."""
+    print("Starting synchronization with remote repository...")
+    
+    # Load existing sync index from data directory
+    sync_index = load_sync_index(data_dir)
+    
+    # Check if we have any existing archive
+    archive_exists = any(
+        (data_dir / str(year)).exists() and 
+        any((data_dir / str(year)).glob("*.json"))
+        for year in range(2020, datetime.now().year + 1)
+    )
+    
+    if not archive_exists:
+        print("🆕 No existing archive found - checking for complete archive download...")
+        
+        # Try to download and use complete archive for first run (most efficient)
+        archive_latest_path = data_dir / config['archive_latest']
+        if not archive_latest_path.exists():
+            print("Downloading archive_latest.txt to data directory...")
+            download_file(config['base_url'] + config['archive_latest'], archive_latest_path)
+        
+        try:
+            with open(archive_latest_path, 'r') as f:
+                latest_archive_name = f.read().strip()
+            
+            archive_path = data_dir / latest_archive_name
+            if not archive_path.exists():
+                print(f"Downloading complete archive: {latest_archive_name}")
+                if download_file(config['base_url'] + latest_archive_name, archive_path):
+                    print("Extracting archive...")
+                    extract_archive(archive_path, data_dir)
+                    print("✅ Archive extracted successfully!")
+                    
+                    # Set sync index based on archive date
+                    archive_date = get_archive_date(archive_path)
+                    print(f"Archive date: {archive_date.date()}")
+                    
+                    # Now proceed with normal sync for any files newer than archive
+                    is_first_run = False
+                else:
+                    print("⚠️  Archive download failed, falling back to individual file download")
+                    is_first_run = True
+            else:
+                print("Using existing archive")
+                is_first_run = False
+        except Exception as e:
+            print(f"⚠️  Error with archive approach: {e}")
+            print("Falling back to individual file download...")
+            is_first_run = True
+    else:
+        print("🔄 Performing incremental synchronization...")
+        is_first_run = False
+    
+    # Download metadata files to data directory
+    changes_csv_path = data_dir / config['changes_csv']
+    print("Downloading changes.csv for synchronization...")
+    download_file(config['base_url'] + config['changes_csv'], changes_csv_path)
+    
+    deletions_csv_path = data_dir / 'deletions.csv'
+    print("Downloading deletions.csv for synchronization...")
+    download_file(config['base_url'] + 'deletions.csv', deletions_csv_path)
+    
+    remote_files = get_remote_file_list(config['base_url'], changes_csv_path)
+    deleted_files = get_deleted_files(config['base_url'], deletions_csv_path)
+    
+    print(f"Found {len(remote_files)} files in remote repository")
+    print(f"Found {len(deleted_files)} deleted files in deletions.csv")
+    
+    if not remote_files:
+        print("No files found in remote repository")
+        return
+    
+    # Check local archive completeness with index support
+    missing_files, outdated_files, local_files = check_local_archive_completeness(data_dir, remote_files, sync_index)
+    
+    # Identify files that should be deleted
+    files_to_delete = set()
+    for deleted_file in deleted_files:
+        if deleted_file in local_files:
+            files_to_delete.add(deleted_file)
+    
+    print(f"Local archive status:")
+    print(f"  - Local files: {len(local_files)}")
+    print(f"  - Remote files: {len(remote_files)}")
+    print(f"  - Missing files: {len(missing_files)}")
+    print(f"  - Outdated files: {len(outdated_files)}")
+    print(f"  - Files to delete: {len(files_to_delete)}")
+    
+    # Build new sync index
+    new_sync_index = {}
+    
+    # Handle deletions first
+    if files_to_delete:
+        print(f"Deleting {len(files_to_delete)} obsolete files...")
+        deleted_count = 0
+        for deleted_file in files_to_delete:
+            # Find and delete the file
+            for year_dir in data_dir.iterdir():
+                if year_dir.is_dir():
+                    file_path = year_dir / deleted_file
+                    if file_path.exists():
+                        try:
+                            file_path.unlink()
+                            deleted_count += 1
+                            # Remove from sync index
+                            if deleted_file in sync_index:
+                                del sync_index[deleted_file]
+                            break
+                        except Exception as e:
+                            print(f"⚠️  Error deleting {deleted_file}: {e}")
+        
+        print(f"✅ Deleted {deleted_count} obsolete files")
+    
+    # Download missing and outdated files
+    files_to_download = missing_files | outdated_files
+    
+    if files_to_download:
+        print(f"Downloading {len(files_to_download)} files to complete synchronization...")
+        
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Process files with thread pool
+        with ThreadPoolExecutor(max_workers=config['max_workers']) as executor:
+            futures = {
+                executor.submit(download_vex_file, vex_file, out_dir, data_dir, config['base_url']): vex_file
+                for vex_file in files_to_download
+            }
+            
+            success_count = 0
+            fail_count = 0
+            downloaded_files = []  # Track files for compact display
+            
+            for future in as_completed(futures):
+                vex_file, success = future.result()
+                if success:
+                    success_count += 1
+                    downloaded_files.append(vex_file)
+                    
+                    # Show progress every 10 files
+                    if success_count % 10 == 0:
+                        print(f"✅ Downloaded {success_count} files...")
+                        # Show files in compact format (5 per line)
+                        if downloaded_files:
+                            for i in range(0, len(downloaded_files), 5):
+                                batch = downloaded_files[i:i+5]
+                                print(f"  - {' | '.join(batch)}")
+                            downloaded_files = []  # Reset for next batch
+                    
+                    # Update sync index for successfully downloaded files
+                    file_path = data_dir / vex_file[:4] / vex_file
+                    if file_path.exists():
+                        new_sync_index[vex_file] = {
+                            'mtime': get_file_modification_time(file_path),
+                            'size': file_path.stat().st_size,
+                            'downloaded': datetime.now().isoformat()
+                        }
+                else:
+                    fail_count += 1
+                    print(f"❌ Failed to download: {vex_file}")
+        
+        # Show any remaining files that weren't displayed in batches
+        if downloaded_files:
+            print(f"✅ Downloaded {success_count} files...")
+            for i in range(0, len(downloaded_files), 5):
+                batch = downloaded_files[i:i+5]
+                print(f"  - {' | '.join(batch)}")
+
+        print(f"\nDownload results:")
+        print(f"  - Successfully downloaded: {success_count} files")
+        print(f"  - Failed to download: {fail_count} files")
+    
+    # Update sync index with existing files that weren't changed
+    for filename, info in sync_index.items():
+        if filename not in files_to_download and filename not in files_to_delete:
+            # File wasn't downloaded or deleted, keep it in index
+            file_path = data_dir / filename[:4] / filename
+            if file_path.exists():
+                new_sync_index[filename] = info
+    
+    # Save updated sync index to data directory
+    save_sync_index(new_sync_index, data_dir)
+    
+    print(f"\nSynchronization complete:")
+    print(f"  - Files downloaded: {len(files_to_download)}")
+    print(f"  - Files deleted: {len(files_to_delete)}")
+    print(f"  - Files failed: {fail_count if 'fail_count' in locals() else 0}")
+    print(f"  - Sync index updated: {len(new_sync_index)} files tracked")
+    
+    if (files_to_download and fail_count > 0) or (files_to_delete and deleted_count < len(files_to_delete)):
+        print("⚠️  Some operations failed. You may want to retry.")
+    else:
+        print("🎉 Local archive is now fully synchronized with remote repository!")
+
 def process_vex_files(vex_files: Set[str], data_dir: Path, out_dir: Path, limit: int = None, max_workers: int = 20, base_url: str = None) -> None:
     """Process VEX files with multi-threading."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -381,6 +682,11 @@ def main():
         default="config.ini",
         help="Configuration file to use (default: config.ini)"
     )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Synchronize local archive with remote repository (ensures complete up-to-date mirror)"
+    )
     
     args = parser.parse_args()
     
@@ -395,7 +701,17 @@ def main():
         args.regex = config['regex_pattern']
         print(f"Using regex pattern from config: {args.regex}")
     
-    # Determine date range
+    # Handle synchronization mode
+    if args.sync:
+        # Setup directories
+        data_dir = Path(config['data_dir'])
+        out_dir = Path(config['out_dir'])
+        
+        # Perform synchronization
+        synchronize_archive(data_dir, out_dir, config)
+        return
+    
+    # Determine date range for regular download
     if args.days:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=args.days)
@@ -404,7 +720,7 @@ def main():
         start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
         end_date = datetime.strptime(args.end_date, "%Y-%m-%d") if args.end_date else datetime.now()
     else:
-        parser.error("Must specify either --days or --start-date")
+        parser.error("Must specify either --days, --start-date, or --sync")
     
     print(f"Date range: {start_date.date()} to {end_date.date()}")
     
@@ -417,16 +733,16 @@ def main():
     print("Downloading changes.csv...")
     download_file(config['base_url'] + config['changes_csv'], changes_path)
     
-    # Download archive_latest.txt
-    archive_latest_path = Path(config['archive_latest'])
-    print("Downloading archive_latest.txt...")
+    # Download archive_latest.txt to data directory
+    archive_latest_path = data_dir / config['archive_latest']
+    print("Downloading archive_latest.txt to data directory...")
     download_file(config['base_url'] + config['archive_latest'], archive_latest_path)
     
     # Read latest archive name
     with open(archive_latest_path, 'r') as f:
         latest_archive_name = f.read().strip()
     
-    archive_path = Path(latest_archive_name)
+    archive_path = data_dir / latest_archive_name
     
     # Check if we need to download archive
     need_download = True

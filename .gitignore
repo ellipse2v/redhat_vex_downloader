@@ -3,6 +3,15 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Project-specific data directories
+# These directories contain downloaded VEX files and should not be committed
+data/
+out/
+stats/
+
+# Test output files
+test_stats_index.json
+
 # C extensions
 *.so
 
@@ -205,3 +214,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+archive_latest.txt

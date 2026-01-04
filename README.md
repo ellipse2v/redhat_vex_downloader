@@ -18,6 +18,8 @@ The Red Hat VEX Downloader automates this entire process, saving you hours of ma
 
 ## Features
 
+### Core Features (Production Ready)
+
 - **Download VEX files** from Red Hat security data repository
 - **Multi-threading support** for faster downloads
 - **Proxy configuration** for corporate environments
@@ -25,6 +27,21 @@ The Red Hat VEX Downloader automates this entire process, saving you hours of ma
 - **Archive management** to avoid re-downloading existing files
 - **Configurable settings** via configuration file
 - **Date range filtering** to get only recent updates
+
+### Additional Tools (Under Construction)
+
+🚧 **rpm_to_cve.py** - RPM to CVE mapping tool (Work in Progress)
+- Maps RPM packages (NEVRA format) to CVEs with detailed vulnerability information
+- Generates Excel reports with separate sheets for fixed, not fixed, and affected packages
+- *Note: This tool is currently under active development and may have limited functionality*
+
+🚧 **vex_statistics.py** - VEX statistics analyzer (Work in Progress)
+- Analyzes VEX files to generate statistics by RHEL version and severity
+- Tracks progress with date-based indexing for incremental analysis
+- Creates Excel reports with visualizations
+- *Note: This tool is currently under active development and may have limited functionality*
+
+> ⚠️ **Important**: The additional tools are provided as preview features and may not have complete functionality. They are included to demonstrate potential future capabilities and for early testing purposes.
 
 ## Installation
 
@@ -400,6 +417,82 @@ data_dir = /shared/vex_output
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.
+
+### Contributing to Under Construction Tools
+
+If you're interested in helping with the development of `rpm_to_cve.py` or `vex_statistics.py`, here are some ways to contribute:
+
+**For rpm_to_cve.py:**
+- Help improve RPM package parsing and NEVRA format handling
+- Enhance CVE mapping algorithms
+- Add support for more package formats
+- Improve Excel report generation and formatting
+
+**For vex_statistics.py:**
+- Expand statistical analysis capabilities
+- Add more visualization options
+- Improve date-based indexing performance
+- Enhance RHEL version detection
+
+**How to contribute:**
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature-name`
+3. Make your changes and add tests
+4. Update documentation if needed
+5. Submit a pull request with a clear description
+
+## Development Status
+
+### rpm_to_cve.py
+- ✅ Basic RPM parsing implemented
+- ✅ CVE mapping framework in place
+- 🚧 Excel report generation needs enhancement
+- 🚧 Additional package format support needed
+- 🚧 Performance optimization required
+
+### vex_statistics.py
+- ✅ Basic VEX file analysis working
+- ✅ RHEL version extraction implemented
+- ✅ Excel report generation functional
+- 🚧 Advanced statistical analysis needed
+- 🚧 More visualization options to add
+- 🚧 Performance improvements for large datasets
+
+## Testing Under Construction Tools
+
+Both `rpm_to_cve.py` and `vex_statistics.py` include test suites that you can run to verify functionality:
+
+### Running Tests for rpm_to_cve.py
+
+```bash
+# Basic functionality test
+python3 rpm_to_cve.py --help
+
+# Test with sample data (create a test RPM list first)
+echo "package-1.0-1.el8.x86_64" > test_rpms.txt
+python3 rpm_to_cve.py --input test_rpms.txt --output test_results.xlsx
+```
+
+### Running Tests for vex_statistics.py
+
+```bash
+# Run unit tests
+python3 -m pytest test/test_vex_statistics_unit.py -v
+
+# Test with sample VEX data
+python3 test/test_stats.py
+
+# Generate statistics report
+python3 vex_statistics.py --input data/ --output stats_report.xlsx
+```
+
+### Test Data
+
+The project includes test data files in the `test/` directory:
+- `test/test_vex.json` - Sample VEX file for testing
+- `test/test_changes.csv` - Sample CSV data for parsing tests
+
+You can use these files to test the tools without downloading real data.
 
 ## Support
 

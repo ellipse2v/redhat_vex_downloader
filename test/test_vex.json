@@ -1,0 +1,12 @@
+{
+  "cve": "CVE-2024-TEST",
+  "vulnerabilities": [
+    {
+      "product_status": {
+        "known_affected": ["rhel-8.4.0", "rhel-9.0.0"],
+        "fixed": ["rhel-8.5.0", "rhel-9.1.0"]
+      },
+      "severity": "high"
+    }
+  ]
+}
