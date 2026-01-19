@@ -206,6 +206,30 @@ max_workers = 5
 max_workers = 30
 ```
 
+## Archive Download Threshold
+
+Configure when to force a full archive download instead of incremental synchronization:
+
+```ini
+[Options]
+# Force full archive download when more than 50,000 files need updating
+# This prevents excessive individual file downloads
+# Default: 50000
+discrepancy_threshold = 50000
+
+# For smaller networks, use a lower threshold
+discrepancy_threshold = 10000
+
+# For very fast networks, use a higher threshold
+discrepancy_threshold = 100000
+```
+
+**How it works**:
+- When the number of missing + outdated files exceeds this threshold
+- The downloader will automatically download and extract the complete archive
+- This is much more efficient than downloading thousands of individual files
+- After archive extraction, only remaining discrepancies are downloaded individually
+
 ## Directory Configuration
 
 Change the default directories if needed:
