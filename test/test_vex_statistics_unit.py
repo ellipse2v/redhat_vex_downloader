@@ -30,14 +30,7 @@ import os
 # Add current path to import module
 sys.path.insert(0, '/mnt/d/dev/github/redhat_vex_downloader')
 
-from vex_statistics import (
-    extract_rhel_versions,
-    get_severity,
-    analyze_vex_file,
-    create_excel_report,
-    load_index,
-    save_index
-)
+from vex_statistics import VEXAnalyzer, StatsIndex, ReportGenerator, VulnerabilityStats
 
 class TestVexStatistics(unittest.TestCase):
     """Test suite for vex_statistics functions"""
@@ -47,13 +40,18 @@ class TestVexStatistics(unittest.TestCase):
         self.test_dir = Path(tempfile.mkdtemp())
         self.test_data_dir = self.test_dir / "test_data"
         self.test_data_dir.mkdir()
+        self.analyzer = VEXAnalyzer(self.test_data_dir)
         
         # Create a sample VEX file for testing
         self.sample_vex = {
             "cve": "CVE-2024-TEST",
+            "document": {
+                "aggregate_severity": {
+                    "text": "critical"
+                }
+            },
             "vulnerabilities": [
                 {
-                    "baseSeverity": "Critical",
                     "product_status": {
                         "fixed": ["rhel8", "rhel9"],
                         "known_not_affected": ["rhel6", "rhel7"],
@@ -61,7 +59,6 @@ class TestVexStatistics(unittest.TestCase):
                     }
                 },
                 {
-                    "baseSeverity": "Important", 
                     "product_status": {
                         "known_affected": ["rhel8-server", "rhel9-workstation"]
                     }
@@ -91,27 +88,29 @@ class TestVexStatistics(unittest.TestCase):
         ]
         
         for product_name, expected_versions in test_cases:
-            result = extract_rhel_versions(product_name)
+            result = self.analyzer.extract_rhel_versions(product_name)
             self.assertEqual(result, expected_versions, 
                            f"Failed for {product_name}: expected {expected_versions}, got {result}")
     
     def test_get_severity(self):
         """Test severity extraction"""
-        # Test with baseSeverity
+        # Test with baseSeverity (legacy format)
         vuln_with_severity = {"baseSeverity": "critical"}
-        self.assertEqual(get_severity(vuln_with_severity), "Critical")
+        self.assertEqual(self.analyzer.get_severity(vuln_with_severity), "Critical")
         
-        # Test with product_status severity
-        vuln_with_product_severity = {
-            "product_status": {
-                "fixed": [{"severity": "important"}]
+        # Test with document aggregate_severity (current Red Hat format)
+        vuln_with_aggregate_severity = {
+            "document": {
+                "aggregate_severity": {
+                    "text": "important"
+                }
             }
         }
-        self.assertEqual(get_severity(vuln_with_product_severity), "Important")
+        self.assertEqual(self.analyzer.get_severity(vuln_with_aggregate_severity), "Important")
         
-        # Test with CVSS metrics
-        vuln_with_cvss = {
-            "metrics": [
+        # Test with CVSS v3 scores
+        vuln_with_cvss_v3 = {
+            "scores": [
                 {
                     "cvss_v3": {
                         "baseScore": 8.5
@@ -119,75 +118,76 @@ class TestVexStatistics(unittest.TestCase):
                 }
             ]
         }
-        self.assertEqual(get_severity(vuln_with_cvss), "Important")  # 8.5 -> Important
+        self.assertEqual(self.analyzer.get_severity(vuln_with_cvss_v3), "Important")  # 8.5 -> Important
+        
+        # Test with CVSS v3 baseSeverity
+        vuln_with_cvss_severity = {
+            "scores": [
+                {
+                    "cvss_v3": {
+                        "baseSeverity": "critical"
+                    }
+                }
+            ]
+        }
+        self.assertEqual(self.analyzer.get_severity(vuln_with_cvss_severity), "Critical")
         
         # Test unknown severity
         empty_vuln = {}
-        self.assertEqual(get_severity(empty_vuln), "Unknown")
+        self.assertEqual(self.analyzer.get_severity(empty_vuln), "Unknown")
     
     def test_analyze_vex_file(self):
         """Test VEX file analysis"""
-        stats = {}
-        analyze_vex_file(str(self.vex_file), stats)
+        self.analyzer.analyze_file(self.vex_file)
         
         # Verify statistics were collected
-        self.assertIn("EL8", stats)
-        self.assertIn("EL9", stats)
-        self.assertIn("EL6", stats)
-        self.assertIn("EL7", stats)
-        self.assertIn("EL10", stats)
+        self.assertIn("EL8", self.analyzer.stats_by_version)
+        self.assertIn("EL9", self.analyzer.stats_by_version)
+        self.assertIn("EL6", self.analyzer.stats_by_version)
+        self.assertIn("EL7", self.analyzer.stats_by_version)
+        self.assertIn("EL10", self.analyzer.stats_by_version)
         
-        # Check EL8 statistics
-        el8_stats = stats["EL8"]
-        self.assertIn("Critical", el8_stats)
-        self.assertIn("Important", el8_stats)
+        # Check EL8 statistics - all vulnerabilities use the document-level severity
+        el8_stats = self.analyzer.stats_by_version["EL8"]
+        self.assertIn("Critical", el8_stats.by_severity)
         
-        # Check Critical severity for EL8
-        critical_stats = el8_stats["Critical"]
+        # Check Critical severity for EL8 (combines both vulnerabilities)
+        critical_stats = el8_stats.by_severity["Critical"]
         self.assertIn("fixed", critical_stats)
+        self.assertIn("known_affected", critical_stats)
         self.assertEqual(critical_stats["fixed"], 1)
-        
-        # Check Important severity for EL8
-        important_stats = el8_stats["Important"]
-        self.assertIn("known_affected", important_stats)
-        self.assertEqual(important_stats["known_affected"], 1)
+        self.assertEqual(critical_stats["known_affected"], 1)
     
     def test_create_excel_report(self):
         """Test Excel report creation"""
-        # Create test statistics
+        # Create test statistics using the current format
+        
         test_stats = {
-            "EL8": {
-                "Critical": {
-                    "fixed": 2,
-                    "known_affected": 1,
-                    "total": 3
-                },
-                "Important": {
-                    "known_not_affected": 1,
-                    "total": 1
-                },
-                "overall": {
-                    "fixed": 2,
-                    "known_affected": 1,
-                    "known_not_affected": 1,
-                    "total": 4
-                }
-            }
+            "EL8": VulnerabilityStats()
         }
         
-        # Create Excel report
-        create_excel_report(test_stats, datetime(2024, 1, 1))
+        # Add some test data
+        test_stats["EL8"].add_entry("Critical", "fixed")
+        test_stats["EL8"].add_entry("Critical", "fixed")
+        test_stats["EL8"].add_entry("Critical", "known_affected")
+        test_stats["EL8"].add_entry("Important", "known_not_affected")
+        
+        # Create report generator and generate reports
+        report_gen = ReportGenerator(test_stats, datetime(2024, 1, 1))
+        reports = report_gen.generate_all()
         
         # Check that files were created
         stats_dir = Path("stats")
         excel_files = list(stats_dir.glob("vex_statistics_*.xlsx"))
         summary_files = list(stats_dir.glob("vex_summary_*.txt"))
+        csv_files = list(stats_dir.glob("vex_statistics_*.csv"))
         
         self.assertGreater(len(excel_files), 0, "Excel file should be created")
         self.assertGreater(len(summary_files), 0, "Summary file should be created")
+        self.assertGreater(len(csv_files), 0, "CSV file should be created")
         
         # Clean up created files (with error handling for permission issues)
-        for file in excel_files + summary_files:
+        for file in excel_files + summary_files + csv_files:
             try:
                 file.unlink()
             except (PermissionError, FileNotFoundError):
@@ -196,20 +196,25 @@ class TestVexStatistics(unittest.TestCase):
     
     def test_index_functions(self):
         """Test index load/save functions"""
-        test_index = {
+        # Create stats index
+        stats_index = StatsIndex(self.test_data_dir)
+        
+        # Update with test data
+        test_data = {
             "last_run": "2024-01-01T12:00:00",
             "file_count": 100,
             "analysis_date": "2024-01-01 12:00:00"
         }
+        stats_index.update(**test_data)
         
         # Save index
-        save_index(test_index, self.test_data_dir)
+        stats_index.save()
         index_file = self.test_data_dir / "stats_index.pkl"
         self.assertTrue(index_file.exists())
         
-        # Load index
-        loaded_index = load_index(self.test_data_dir)
-        self.assertEqual(loaded_index, test_index)
+        # Load index (create new instance to test loading)
+        loaded_index = StatsIndex(self.test_data_dir)
+        self.assertEqual(loaded_index.data, test_data)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
