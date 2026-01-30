@@ -64,21 +64,22 @@ OUTPUT_SUMMARY = "vex_summary_{date}.txt"
 OUTPUT_CSV = "vex_statistics_{date}.csv"
 MAX_WORKERS = 10
 
-# RHEL version patterns
+# RHEL version patterns - Improved to match all product ID formats
 RHEL_PATTERNS = {
-    'EL6': r'el6|rhel6|redhat.*6|rhel.*6',
-    'EL7': r'el7|rhel7|redhat.*7|rhel.*7', 
-    'EL8': r'el8|rhel8|redhat.*8|rhel.*8|rhel8\.\d+',
-    'EL9': r'el9|rhel9|redhat.*9|rhel.*9|rhel9\.\d+',
-    'EL10': r'el10|rhel10|redhat.*10|rhel.*10',
+    'EL6': r'(?:^|[_:\s-])(?:el6|rhel6|6Client|6Server|6Workstation|6ComputeNode)(?:[_:\s\-\.]|$)|red_hat_enterprise_linux_6',
+    'EL7': r'(?:^|[_:\s-])(?:el7|rhel7|7Client|7Server|7Workstation|7ComputeNode)(?:[_:\s\-\.]|$)|red_hat_enterprise_linux_7',
+    'EL8': r'(?:^|[_:\s-])(?:el8|rhel8|8Base|rhel8\.\d+)(?:[_:\s\-\.]|$)|red_hat_enterprise_linux_8',
+    'EL9': r'(?:^|[_:\s-])(?:el9|rhel9|9Base|rhel9\.\d+)(?:[_:\s\-\.]|$)|red_hat_enterprise_linux_9',
+    'EL10': r'(?:^|[_:\s-])(?:el10|rhel10|10Base)(?:[_:\s\-\.]|$)|red_hat_enterprise_linux_10',
 }
 
 # Severity levels with their priority order (FIXED ORDER)
 SEVERITY_ORDER = ['Critical', 'Important', 'Moderate', 'Low', 'Unknown']
 SEVERITY_PRIORITY = {sev: idx for idx, sev in enumerate(SEVERITY_ORDER)}
 
-# Status types
-STATUS_TYPES = ['fixed', 'known_affected', 'known_not_affected', 'under_investigation']
+# Status types - UPDATED to include no_fix_planned categories
+STATUS_TYPES = ['fixed', 'known_affected', 'known_not_affected', 'under_investigation', 
+                'will_not_fix', 'out_of_support_scope']
 
 
 @dataclass
@@ -214,6 +215,12 @@ class VEXAnalyzer:
         
         return 'Unknown'
     
+    def normalize_status(self, status_type: str) -> str:
+        """Normalize status type to match our categories."""
+        # Map standard CSAF status types to our status names
+        # The status_type here comes from product_status keys
+        return status_type
+    
     def analyze_file(self, file_path: Path) -> int:
         """Analyze a single VEX file and return number of vulnerabilities processed."""
         try:
@@ -226,18 +233,39 @@ class VEXAnalyzer:
             for vuln in vulnerabilities:
                 # Get severity from the entire data structure (not just vuln)
                 severity = self.get_severity(data)
-                product_status = vuln.get('product_status', {})
                 
-                # Process each status type
-                for status_type in STATUS_TYPES:
-                    products = product_status.get(status_type, [])
-                    
+                # Process product_status entries
+                product_status = vuln.get('product_status', {})
+                for status_type, products in product_status.items():
                     for product in products:
                         rhel_versions = self.extract_rhel_versions(product)
+                        normalized_status = self.normalize_status(status_type)
                         
                         for version in rhel_versions:
-                            self.stats_by_version[version].add_entry(severity, status_type)
+                            self.stats_by_version[version].add_entry(severity, normalized_status)
                             count += 1
+                
+                # Process remediations array for no_fix_planned entries
+                remediations = vuln.get('remediations', [])
+                for remediation in remediations:
+                    if remediation.get('category') == 'no_fix_planned':
+                        details = remediation.get('details', '')
+                        product_ids = remediation.get('product_ids', [])
+                        
+                        # Determine the specific status based on details
+                        if 'will not fix' in details.lower():
+                            status = 'will_not_fix'
+                        elif 'out of support' in details.lower():
+                            status = 'out_of_support_scope'
+                        else:
+                            status = 'will_not_fix'  # Default
+                        
+                        for product_id in product_ids:
+                            rhel_versions = self.extract_rhel_versions(product_id)
+                            
+                            for version in rhel_versions:
+                                self.stats_by_version[version].add_entry(severity, status)
+                                count += 1
             
             return count
             
@@ -484,7 +512,8 @@ class ReportGenerator:
             
         except Exception as e:
             logger.error(f"Error generating Excel: {e}")
-            return None    
+            return None
+    
     def generate_summary(self):
         """Generate text summary with proper severity ordering."""
         summary_file = Path(STATS_DIR) / OUTPUT_SUMMARY.format(date=self.date_str)
